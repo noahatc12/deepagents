@@ -56,6 +56,64 @@ _git_branch_cache: dict[str, str | None] = {}
 SpinnerStatus = Literal["Thinking", "Offloading"] | None
 """Valid spinner display states, or `None` to hide."""
 
+# Pricing in USD per 1M tokens: {model_substring: (input_cost, output_cost)}
+# Matched by checking if the model name contains the key (longest match wins).
+MODEL_COSTS: dict[str, tuple[float, float]] = {
+    "claude-opus-4": (15.0, 75.0),
+    "claude-sonnet-4": (3.0, 15.0),
+    "claude-haiku-4": (0.80, 4.0),
+    "claude-3-5-sonnet": (3.0, 15.0),
+    "claude-3-5-haiku": (0.80, 4.0),
+    "claude-3-opus": (15.0, 75.0),
+    "claude-3-sonnet": (3.0, 15.0),
+    "claude-3-haiku": (0.25, 1.25),
+}
+
+
+def get_model_cost(model_name: str) -> tuple[float, float] | None:
+    """Return (input_cost_per_mtok, output_cost_per_mtok) for a model, or None.
+
+    Matches by checking if the model name contains a known key. When multiple
+    keys match the longest key wins (most specific match).
+
+    Args:
+        model_name: The model identifier (e.g. ``"claude-sonnet-4-6"``).
+
+    Returns:
+        A ``(input_usd_per_mtok, output_usd_per_mtok)`` tuple, or ``None`` if
+        the model is not recognised.
+    """
+    model_lower = model_name.lower()
+    best_key = ""
+    best_cost: tuple[float, float] | None = None
+    for key, cost in MODEL_COSTS.items():
+        if key in model_lower and len(key) > len(best_key):
+            best_key = key
+            best_cost = cost
+    return best_cost
+
+
+def calculate_cost(
+    input_tokens: int,
+    output_tokens: int,
+    model_name: str,
+) -> float | None:
+    """Calculate the USD cost for a given number of tokens.
+
+    Args:
+        input_tokens: Number of input tokens.
+        output_tokens: Number of output tokens.
+        model_name: Model identifier used to look up pricing.
+
+    Returns:
+        Cost in USD, or ``None`` if the model has no known pricing.
+    """
+    costs = get_model_cost(model_name)
+    if costs is None:
+        return None
+    input_cost_per_mtok, output_cost_per_mtok = costs
+    return (input_tokens * input_cost_per_mtok + output_tokens * output_cost_per_mtok) / 1_000_000
+
 
 @dataclass
 class ModelStats:
@@ -65,11 +123,14 @@ class ModelStats:
         request_count: Number of LLM API requests made to this model.
         input_tokens: Cumulative input tokens sent to this model.
         output_tokens: Cumulative output tokens received from this model.
+        cost_usd: Cumulative estimated cost in USD, or ``None`` if pricing is
+            unavailable for this model.
     """
 
     request_count: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    cost_usd: float | None = None
 
 
 @dataclass
@@ -87,6 +148,8 @@ class SessionStats:
             `model_name`. Empty dict means no named-model requests were
             recorded; `print_usage_table` omits the model table in that case and
             shows only the wall-time line (if applicable).
+        total_cost_usd: Cumulative estimated cost in USD across all models, or
+            ``None`` if no pricing information is available for any model used.
     """
 
     request_count: int = 0
@@ -94,6 +157,7 @@ class SessionStats:
     output_tokens: int = 0
     wall_time_seconds: float = 0.0
     per_model: dict[str, ModelStats] = field(default_factory=dict)
+    total_cost_usd: float | None = None
 
     def record_request(
         self,
@@ -103,7 +167,8 @@ class SessionStats:
     ) -> None:
         """Accumulate token counts for one completed LLM request.
 
-        Updates both the session totals and the per-model breakdown.
+        Updates both the session totals and the per-model breakdown. When
+        pricing is available for ``model_name`` the cost is also accumulated.
 
         Args:
             model_name: The model that served this request (used as the
@@ -120,6 +185,10 @@ class SessionStats:
             entry.request_count += 1
             entry.input_tokens += input_toks
             entry.output_tokens += output_toks
+            request_cost = calculate_cost(input_toks, output_toks, model_name)
+            if request_cost is not None:
+                entry.cost_usd = (entry.cost_usd or 0.0) + request_cost
+                self.total_cost_usd = (self.total_cost_usd or 0.0) + request_cost
 
     def merge(self, other: SessionStats) -> None:
         """Merge another `SessionStats` into this one (mutates *self*).
@@ -133,11 +202,15 @@ class SessionStats:
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
         self.wall_time_seconds += other.wall_time_seconds
+        if other.total_cost_usd is not None:
+            self.total_cost_usd = (self.total_cost_usd or 0.0) + other.total_cost_usd
         for model, ms in other.per_model.items():
             entry = self.per_model.setdefault(model, ModelStats())
             entry.request_count += ms.request_count
             entry.input_tokens += ms.input_tokens
             entry.output_tokens += ms.output_tokens
+            if ms.cost_usd is not None:
+                entry.cost_usd = (entry.cost_usd or 0.0) + ms.cost_usd
 
 
 def format_token_count(count: int) -> str:
@@ -154,6 +227,20 @@ def format_token_count(count: int) -> str:
     if count >= 1000:  # noqa: PLR2004
         return f"{count / 1000:.1f}K"
     return str(count)
+
+
+def format_cost(cost_usd: float) -> str:
+    """Format a USD cost into a human-readable string.
+
+    Args:
+        cost_usd: Cost in US dollars.
+
+    Returns:
+        Formatted string like ``"$0.0023"`` or ``"$1.23"``.
+    """
+    if cost_usd >= 1.0:  # noqa: PLR2004
+        return f"${cost_usd:.4f}"
+    return f"${cost_usd:.6f}"
 
 
 def print_usage_table(
@@ -187,37 +274,55 @@ def print_usage_table(
             padding=(0, 2, 0, 0),
             show_edge=False,
         )
+        has_cost = any(ms.cost_usd is not None for ms in stats.per_model.values())
+
         table.add_column("Model", style="dim")
         table.add_column("Reqs", justify="right", style="dim")
         table.add_column("InputTok", justify="right", style="dim")
         table.add_column("OutputTok", justify="right", style="dim")
+        if has_cost:
+            table.add_column("Cost", justify="right", style="dim")
 
         if multi_model:
             for model_name, ms in stats.per_model.items():
-                table.add_row(
+                row = [
                     model_name,
                     str(ms.request_count),
                     format_token_count(ms.input_tokens),
                     format_token_count(ms.output_tokens),
-                )
-            table.add_row(
+                ]
+                if has_cost:
+                    row.append(format_cost(ms.cost_usd) if ms.cost_usd is not None else "-")
+                table.add_row(*row)
+            total_row = [
                 "Total",
                 str(stats.request_count),
                 format_token_count(stats.input_tokens),
                 format_token_count(stats.output_tokens),
-            )
+            ]
+            if has_cost:
+                total_row.append(
+                    format_cost(stats.total_cost_usd) if stats.total_cost_usd is not None else "-"
+                )
+            table.add_row(*total_row)
         else:
             model_label = next(iter(stats.per_model))
-            table.add_row(
+            ms = stats.per_model[model_label]
+            row = [
                 model_label,
-                str(stats.request_count),
-                format_token_count(stats.input_tokens),
-                format_token_count(stats.output_tokens),
-            )
+                str(ms.request_count),
+                format_token_count(ms.input_tokens),
+                format_token_count(ms.output_tokens),
+            ]
+            if has_cost:
+                row.append(format_cost(ms.cost_usd) if ms.cost_usd is not None else "-")
+            table.add_row(*row)
 
         console.print()
         console.print("[bold]Usage Stats[/bold]")
         console.print(table)
+        if stats.total_cost_usd is not None and not stats.per_model:
+            console.print(f"[dim]Estimated cost  {format_cost(stats.total_cost_usd)}[/dim]")
     if has_time:
         console.print()
         console.print(f"[dim]Agent active  {wall_time:.1f}s[/dim]")

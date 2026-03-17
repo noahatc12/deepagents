@@ -24,8 +24,11 @@ from deepagents_cli.textual_adapter import (
     _build_interrupted_ai_message,
     _build_stream_config,
     _is_summarization_chunk,
+    calculate_cost,
     execute_task_textual,
+    format_cost,
     format_token_count,
+    get_model_cost,
     print_usage_table,
 )
 from deepagents_cli.widgets.messages import SummarizationMessage
@@ -941,3 +944,206 @@ class TestPrintUsageTable:
         print_usage_table(stats, wall_time=0.01, console=console)
         output = buf.getvalue()
         assert output.strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# get_model_cost tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetModelCost:
+    """Tests for `get_model_cost` pricing lookup."""
+
+    def test_claude_sonnet_4_returns_pricing(self) -> None:
+        input_cost, output_cost = get_model_cost("claude-sonnet-4-6")  # type: ignore[misc]
+        assert input_cost == pytest.approx(3.0)
+        assert output_cost == pytest.approx(15.0)
+
+    def test_claude_opus_4_returns_pricing(self) -> None:
+        input_cost, output_cost = get_model_cost("claude-opus-4-6")  # type: ignore[misc]
+        assert input_cost == pytest.approx(15.0)
+        assert output_cost == pytest.approx(75.0)
+
+    def test_claude_haiku_4_returns_pricing(self) -> None:
+        input_cost, output_cost = get_model_cost("claude-haiku-4-5-20251001")  # type: ignore[misc]
+        assert input_cost == pytest.approx(0.80)
+        assert output_cost == pytest.approx(4.0)
+
+    def test_claude_3_5_sonnet_returns_pricing(self) -> None:
+        input_cost, output_cost = get_model_cost("claude-3-5-sonnet-20241022")  # type: ignore[misc]
+        assert input_cost == pytest.approx(3.0)
+        assert output_cost == pytest.approx(15.0)
+
+    def test_claude_3_opus_returns_pricing(self) -> None:
+        input_cost, output_cost = get_model_cost("claude-3-opus-20240229")  # type: ignore[misc]
+        assert input_cost == pytest.approx(15.0)
+        assert output_cost == pytest.approx(75.0)
+
+    def test_claude_3_haiku_returns_pricing(self) -> None:
+        input_cost, output_cost = get_model_cost("claude-3-haiku-20240307")  # type: ignore[misc]
+        assert input_cost == pytest.approx(0.25)
+        assert output_cost == pytest.approx(1.25)
+
+    def test_unknown_model_returns_none(self) -> None:
+        assert get_model_cost("gpt-4o") is None
+
+    def test_case_insensitive_matching(self) -> None:
+        assert get_model_cost("Claude-Sonnet-4-6") is not None
+
+    def test_provider_prefix_stripped(self) -> None:
+        """Model names like 'anthropic:claude-sonnet-4-6' should still match."""
+        result = get_model_cost("anthropic:claude-sonnet-4-6")
+        assert result is not None
+        assert result[0] == pytest.approx(3.0)
+
+    def test_most_specific_match_wins(self) -> None:
+        """claude-3-5-haiku should match over claude-3-haiku (longer key)."""
+        input_cost, _ = get_model_cost("claude-3-5-haiku-20241022")  # type: ignore[misc]
+        assert input_cost == pytest.approx(0.80)
+
+
+# ---------------------------------------------------------------------------
+# calculate_cost tests
+# ---------------------------------------------------------------------------
+
+
+class TestCalculateCost:
+    """Tests for `calculate_cost`."""
+
+    def test_known_model_returns_cost(self) -> None:
+        # claude-sonnet-4: $3/MTok input, $15/MTok output
+        cost = calculate_cost(1_000_000, 1_000_000, "claude-sonnet-4-6")
+        assert cost == pytest.approx(18.0)
+
+    def test_zero_tokens_returns_zero(self) -> None:
+        cost = calculate_cost(0, 0, "claude-sonnet-4-6")
+        assert cost == pytest.approx(0.0)
+
+    def test_unknown_model_returns_none(self) -> None:
+        assert calculate_cost(1000, 500, "unknown-model") is None
+
+    def test_small_token_count(self) -> None:
+        # 1000 input @ $3/MTok + 500 output @ $15/MTok
+        cost = calculate_cost(1000, 500, "claude-sonnet-4-6")
+        assert cost == pytest.approx((1000 * 3.0 + 500 * 15.0) / 1_000_000)
+
+
+# ---------------------------------------------------------------------------
+# format_cost tests
+# ---------------------------------------------------------------------------
+
+
+class TestFormatCost:
+    """Tests for `format_cost`."""
+
+    def test_large_cost_four_decimal_places(self) -> None:
+        assert format_cost(1.5) == "$1.5000"
+
+    def test_small_cost_six_decimal_places(self) -> None:
+        assert format_cost(0.000123) == "$0.000123"
+
+    def test_zero(self) -> None:
+        assert format_cost(0.0) == "$0.000000"
+
+    def test_exactly_one_dollar(self) -> None:
+        assert format_cost(1.0) == "$1.0000"
+
+
+# ---------------------------------------------------------------------------
+# SessionStats cost tracking tests
+# ---------------------------------------------------------------------------
+
+
+class TestSessionStatsCost:
+    """Tests for cost tracking in SessionStats."""
+
+    def test_record_request_accumulates_cost_for_known_model(self) -> None:
+        stats = SessionStats()
+        stats.record_request("claude-sonnet-4-6", 1_000_000, 0)
+        assert stats.total_cost_usd == pytest.approx(3.0)
+        assert stats.per_model["claude-sonnet-4-6"].cost_usd == pytest.approx(3.0)
+
+    def test_record_request_no_cost_for_unknown_model(self) -> None:
+        stats = SessionStats()
+        stats.record_request("gpt-4o", 1000, 500)
+        assert stats.total_cost_usd is None
+        assert stats.per_model["gpt-4o"].cost_usd is None
+
+    def test_record_multiple_requests_accumulates(self) -> None:
+        stats = SessionStats()
+        stats.record_request("claude-sonnet-4-6", 1_000_000, 0)
+        stats.record_request("claude-sonnet-4-6", 1_000_000, 0)
+        assert stats.total_cost_usd == pytest.approx(6.0)
+        assert stats.per_model["claude-sonnet-4-6"].cost_usd == pytest.approx(6.0)
+
+    def test_record_empty_model_no_cost(self) -> None:
+        stats = SessionStats()
+        stats.record_request("", 1000, 500)
+        assert stats.total_cost_usd is None
+
+    def test_merge_combines_costs(self) -> None:
+        a = SessionStats()
+        a.record_request("claude-sonnet-4-6", 1_000_000, 0)
+
+        b = SessionStats()
+        b.record_request("claude-sonnet-4-6", 1_000_000, 0)
+
+        a.merge(b)
+        assert a.total_cost_usd == pytest.approx(6.0)
+
+    def test_merge_with_no_cost_other_preserves_self_cost(self) -> None:
+        a = SessionStats()
+        a.record_request("claude-sonnet-4-6", 1_000_000, 0)
+
+        b = SessionStats()
+        b.record_request("gpt-4o", 1000, 500)
+
+        a.merge(b)
+        assert a.total_cost_usd == pytest.approx(3.0)
+
+    def test_merge_both_none_stays_none(self) -> None:
+        a = SessionStats()
+        a.record_request("gpt-4o", 1000, 500)
+        b = SessionStats()
+        b.record_request("gpt-4o", 1000, 500)
+        a.merge(b)
+        assert a.total_cost_usd is None
+
+
+# ---------------------------------------------------------------------------
+# print_usage_table cost display tests
+# ---------------------------------------------------------------------------
+
+
+class TestPrintUsageTableCost:
+    """Tests for cost column in print_usage_table."""
+
+    def test_cost_column_shown_for_known_model(self) -> None:
+        stats = SessionStats()
+        stats.record_request("claude-sonnet-4-6", 1_000_000, 0)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=False)
+        print_usage_table(stats, wall_time=1.0, console=console)
+        output = buf.getvalue()
+        assert "Cost" in output
+        assert "$" in output
+
+    def test_cost_column_absent_for_unknown_model(self) -> None:
+        stats = SessionStats()
+        stats.record_request("gpt-4o", 1000, 500)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=False)
+        print_usage_table(stats, wall_time=1.0, console=console)
+        output = buf.getvalue()
+        assert "Cost" not in output
+
+    def test_multi_model_cost_total_shown(self) -> None:
+        stats = SessionStats()
+        stats.record_request("claude-sonnet-4-6", 1_000_000, 0)
+        stats.record_request("claude-opus-4-6", 1_000_000, 0)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=False)
+        print_usage_table(stats, wall_time=1.0, console=console)
+        output = buf.getvalue()
+        assert "Total" in output
+        assert "Cost" in output
