@@ -61,7 +61,7 @@ class OaklandRentalRegistryCollector(BaseRentalRegistryCollector):
 
     source_name = "oakland_rental_registry"
     BASE_URL = "https://data.oaklandca.gov/resource"
-    DATASET_ID = "TODO_oakland_rap_dataset_id"
+    DATASET_ID = "5dsi-8gtf"  # Oakland Residential Rental Property List
     PAGE_SIZE = 1000
 
     @with_retry(max_attempts=4, base_delay=2.0)

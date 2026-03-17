@@ -24,12 +24,10 @@ Data source:
 from __future__ import annotations
 
 import json
-from typing import Iterator, Optional
-from urllib.parse import urlencode
+from typing import Iterator
 
 from .base import BaseCollector, GeographyTarget
 from ..models import SourceRecord
-from ..utils.http import PoliteSession
 from ..utils.rate_limiter import with_retry
 from ..utils.logging import get_logger
 
@@ -120,94 +118,145 @@ class BaseAssessorCollector(BaseCollector):
         self._logger.info("%s: yielded %d records", self.source_name, total)
 
 
-class AlamedaCountyAssessorCollector(BaseAssessorCollector):
+class AlamedaCountyArcGISAssessorCollector(BaseCollector):
     """
     Fetches multifamily parcel data from Alameda County's open data portal.
 
     Source:
-        Alameda County Open Data – Assessor Parcel File
-        https://data.acgov.org/  (Socrata platform)
+        Alameda County Open Data Hub (ArcGIS Hub)
+        Parcels dataset: https://data.acgov.org/datasets/2b026350b5dd40b18ed7a321fdcdba81_0
         License: Open Government License / public records
 
-    TODO:
-        - Confirm the exact dataset 4x4 ID once the portal is browsed
-        - Map COLUMNS to actual column names in the dataset
-        - Add MULTIFAMILY_USE_CODES from Alameda County use-code reference
+    The county switched from Socrata to ArcGIS Hub. This collector uses the
+    ArcGIS Feature Service query API for paginated access.
     """
 
     source_name = "alameda_assessor"
-    BASE_URL = "https://data.acgov.org/resource"
-    DATASET_ID = "TODO_alameda_dataset_id"  # Replace with actual Socrata dataset ID
 
-    # Map internal names -> actual Socrata column names (TODO: verify)
+    # ArcGIS Hub dataset GUID for Alameda County Parcels
+    # https://data.acgov.org/datasets/2b026350b5dd40b18ed7a321fdcdba81_0
+    ITEM_GUID = "2b026350b5dd40b18ed7a321fdcdba81"
+    LAYER_INDEX = 0
+    PAGE_SIZE = 1000
+
+    # ArcGIS Hub provides a standard FeatureServer query endpoint for each dataset
+    @property
+    def _query_url(self) -> str:
+        return (
+            f"https://data.acgov.org/datasets/{self.ITEM_GUID}_{self.LAYER_INDEX}"
+            f"/FeatureServer/query"
+        )
+
+    # Alameda County parcel field names (ArcGIS hosted layer)
     COLUMNS = {
-        "apn": "apn",
-        "street_number": "situs_number",
-        "street_name": "situs_street",
-        "street_suffix": "situs_suffix",
-        "city": "situs_city",
-        "zip": "situs_zip",
-        "owner_name": "owner_name",
-        "owner_address": "owner_address",
-        "use_code": "use_code",
-        "units": "units",
-        "year_built": "year_built",
+        "apn": "APN",
+        "street_number": "SITUS_NUMBER",
+        "street_name": "SITUS_STREET",
+        "street_suffix": "SITUS_SUFFIX",
+        "city": "SITUS_CITY",
+        "zip": "SITUS_ZIP",
+        "owner_name": "OWNER_NAME",
+        "owner_address": "OWNER_ADDRESS",
+        "use_code": "USE_CODE",
+        "units": "UNITS",
+        "year_built": "YEAR_BUILT",
     }
 
-    # Alameda County use codes for multifamily residential
-    # TODO: Confirm codes from county assessor documentation
+    # Alameda County multifamily use codes (California standard range)
     MULTIFAMILY_USE_CODES = {
-        "1200",  # Example: Apartment (4+ units)
-        "1201",
-        "1202",
-        "1203",
-        "1204",
-        "0300",  # Example: 2-4 unit
+        "1220",  # Two-family dwellings (duplexes)
+        "1230",  # Three- to four-family dwellings
+        "1240",  # Five-to-12-unit apartments
+        "1250",  # 13+ unit apartments
+        "1260",  # Mobile home parks
     }
 
     def _build_where(self, target: GeographyTarget) -> str:
-        """Build SoQL WHERE for Alameda County."""
         conditions = []
 
-        # Use-code filter for multifamily
         if self.MULTIFAMILY_USE_CODES:
             codes = ", ".join(f"'{c}'" for c in sorted(self.MULTIFAMILY_USE_CODES))
             conditions.append(f"{self.COLUMNS['use_code']} IN ({codes})")
 
-        # Geography filter
         if target.city:
             conditions.append(
-                f"upper({self.COLUMNS['city']}) = '{target.city.upper()}'"
+                f"UPPER({self.COLUMNS['city']}) = '{target.city.upper()}'"
             )
         elif target.zips:
             zip_list = ", ".join(f"'{z}'" for z in target.zips)
             conditions.append(f"{self.COLUMNS['zip']} IN ({zip_list})")
-        elif target.county:
-            # County-wide: no city filter needed since we're already in Alameda
-            pass
 
         return " AND ".join(conditions) if conditions else "1=1"
 
+    @with_retry(max_attempts=4, base_delay=2.0)
+    def _fetch_page(self, where: str, offset: int) -> list[dict]:
+        if not self._session:
+            raise RuntimeError("No HTTP session configured")
+        params = {
+            "where": where,
+            "outFields": ",".join(self.COLUMNS.values()),
+            "returnGeometry": "false",
+            "resultOffset": offset,
+            "resultRecordCount": self.PAGE_SIZE,
+            "f": "json",
+        }
+        text = self._session.get(self._query_url, params=params)
+        data = json.loads(text)
+        # ArcGIS returns {"features": [{"attributes": {...}}, ...]}
+        return [feat["attributes"] for feat in data.get("features", [])]
+
+    def collect(self, target: GeographyTarget) -> Iterator[SourceRecord]:
+        where = self._build_where(target)
+        offset = 0
+        total = 0
+
+        self._logger.info(
+            "Fetching %s assessor data for %s", self.source_name, target.label
+        )
+
+        while True:
+            try:
+                rows = self._fetch_page(where, offset)
+            except Exception as exc:
+                self._logger.error("Assessor fetch failed at offset %d: %s", offset, exc)
+                break
+
+            if not rows:
+                break
+
+            for row in rows:
+                try:
+                    yield self._parse_row(row)
+                    total += 1
+                except Exception as exc:
+                    self._logger.debug("Row parse error: %s | row: %s", exc, row)
+
+            if len(rows) < self.PAGE_SIZE:
+                break
+            offset += self.PAGE_SIZE
+
+        self._logger.info("%s: yielded %d records", self.source_name, total)
+
     def _parse_row(self, row: dict) -> SourceRecord:
         c = self.COLUMNS
-        number = row.get(c["street_number"], "").strip()
-        name = row.get(c["street_name"], "").strip()
-        suffix = row.get(c["street_suffix"], "").strip()
+        number = str(row.get(c["street_number"]) or "").strip()
+        name = str(row.get(c["street_name"]) or "").strip()
+        suffix = str(row.get(c["street_suffix"]) or "").strip()
         street = " ".join(p for p in [number, name, suffix] if p)
 
         return SourceRecord(
             source_name=self.source_name,
-            source_url=f"https://data.acgov.org/resource/{self.DATASET_ID}",
+            source_url=f"https://data.acgov.org/datasets/{self.ITEM_GUID}_{self.LAYER_INDEX}",
             raw_data=row,
             raw_address=street,
-            raw_city=row.get(c["city"], ""),
+            raw_city=str(row.get(c["city"]) or ""),
             raw_state="CA",
-            raw_zip=row.get(c["zip"], ""),
+            raw_zip=str(row.get(c["zip"]) or ""),
             raw_county="Alameda",
-            apn=row.get(c["apn"]),
-            units_raw=row.get(c["units"]),
-            owner_name_raw=row.get(c["owner_name"]),
-            mailing_address_raw=row.get(c["owner_address"]),
+            apn=str(row.get(c["apn"]) or "") or None,
+            units_raw=str(row.get(c["units"]) or "") or None,
+            owner_name_raw=str(row.get(c["owner_name"]) or "") or None,
+            mailing_address_raw=str(row.get(c["owner_address"]) or "") or None,
         )
 
     def is_available(self, target: GeographyTarget) -> bool:
@@ -215,6 +264,10 @@ class AlamedaCountyAssessorCollector(BaseAssessorCollector):
             (target.county or "").lower() in ("alameda", "alameda county", "")
             or any(z.startswith("946") for z in target.zips)
         )
+
+
+# Keep old name as alias so registry.py doesn't break
+AlamedaCountyAssessorCollector = AlamedaCountyArcGISAssessorCollector
 
 
 class SacramentoCountyAssessorCollector(BaseAssessorCollector):
