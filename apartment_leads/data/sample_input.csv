@@ -1,0 +1,11 @@
+property_name,street_address,city,state,zip,county,units,apn,website,phone,owner_name,owner_entity,management_name,notes
+Oak Garden Apartments,1234 Telegraph Ave,Oakland,CA,94612,Alameda,24,,https://oakgarden-example.com,(510) 555-0101,,,,"Self-managed community"
+Lakeshore Flats,5678 Lake Shore Ave,Oakland,CA,94610,Alameda,12,,,(510) 555-0202,Robert Chen,Chen Family Trust,,
+Rockridge Commons,910 College Ave,Oakland,CA,94618,Alameda,36,048-1234-567-01,https://www.greystar.com/properties/rockridge-commons,(510) 555-0303,,Greystar Real Estate Partners LLC,Greystar,Managed by Greystar
+Grand Lake Manor,1122 Grand Ave,Oakland,CA,94610,Alameda,8,,,( 510) 555-0404,Maria Gonzalez,,,"Owner on-site"
+Uptown Studios,3344 Broadway,Oakland,CA,94611,Alameda,20,,,510-555-0505,,Uptown Holdings LLC,,
+Fruitvale Arms,5566 East 14th St,Oakland,CA,94601,Alameda,16,,,(510) 555-0606,James Wilson,,,"Long-time owner"
+Temescal Terrace,4455 Telegraph Ave,Oakland,CA,94609,Alameda,32,,,510-555-0707,,Prometheus Real Estate Group,Prometheus,See website for tours
+Laurel District Apts,4789 MacArthur Blvd,Oakland,CA,94619,Alameda,10,,,,Linda Park,Park Family Properties,,
+East Oakland Flats,7890 International Blvd,Oakland,CA,94621,Alameda,28,,,(510) 555-0909,,Bay Area Property Mgmt LLC,Bay Area Property Mgmt,
+Montclair Heights,1500 Mountain Blvd,Oakland,CA,94611,Alameda,6,,,,(510) 555-1010,David Kim,,

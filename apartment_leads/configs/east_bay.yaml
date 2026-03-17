@@ -1,0 +1,63 @@
+# East Bay (Alameda County / Oakland) pipeline configuration
+# Run with: python -m apartment_leads run --config configs/east_bay.yaml
+
+geography:
+  city: Oakland
+  county: Alameda
+  state: CA
+  # Optional: filter to specific ZIPs instead of whole city
+  # zips:
+  #   - "94601"
+  #   - "94602"
+  #   - "94603"
+  #   - "94605"
+  #   - "94606"
+
+sources:
+  # Which collectors to enable (comment out to enable all applicable)
+  enabled:
+    - alameda_assessor
+    - oakland_rental_registry
+    - overture_maps
+    # - csv_import   # Uncomment and set csv_path below to import your own file
+
+  configs:
+    alameda_assessor: {}   # Uses default Socrata endpoint; set API app token if available
+    oakland_rental_registry: {}
+    overture_maps: {}
+    # csv_import:
+    #   csv_path: data/my_oakland_properties.csv
+
+pipeline:
+  requests_per_second: 0.5      # Polite crawl rate (2s between requests)
+  cache_ttl_seconds: 86400      # Cache responses for 24 hours
+  cache_db: data/cache/requests.db
+  unclear_threshold: 0.20       # Score magnitude below this = "unclear"
+  filter_third_party: true      # Exclude likely-third-party from final export
+  min_units: 5                  # Only include 5+ unit buildings
+  run_llm_review: false         # Set true and configure llm_reviewer for AI review
+  log_level: INFO
+  # log_file: logs/east_bay_run.log
+
+enrichment:
+  enabled:
+    - ca_sos
+    - opencorporates
+  configs:
+    ca_sos:
+      # Download monthly CSV from:
+      # https://www.sos.ca.gov/business-programs/business-entities/data-file-request
+      # ca_sos_csv_path: data/ca_sos_entities.csv
+      {}
+    opencorporates:
+      jurisdiction_code: us_ca
+      # api_key: YOUR_OPENCORPORATES_API_KEY  # optional, increases rate limits
+
+output:
+  dir: data/processed
+  csv: true
+  excel: true
+  json: true
+  review_queue: true
+  sqlite: true
+  # db_path: data/east_bay_leads.db  # custom db path (default: output dir/leads.db)

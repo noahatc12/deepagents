@@ -1,0 +1,42 @@
+# Sacramento County pipeline configuration
+# Run with: python -m apartment_leads run --config configs/sacramento.yaml
+
+geography:
+  city: Sacramento
+  county: Sacramento
+  state: CA
+
+sources:
+  enabled:
+    - sacramento_assessor
+    - overture_maps
+
+  configs:
+    sacramento_assessor: {}
+    overture_maps: {}
+
+pipeline:
+  requests_per_second: 0.5
+  cache_ttl_seconds: 86400
+  cache_db: data/cache/requests.db
+  unclear_threshold: 0.20
+  filter_third_party: true
+  min_units: 5
+  log_level: INFO
+
+enrichment:
+  enabled:
+    - ca_sos
+    - opencorporates
+  configs:
+    ca_sos: {}
+    opencorporates:
+      jurisdiction_code: us_ca
+
+output:
+  dir: data/processed/sacramento
+  csv: true
+  excel: true
+  json: false
+  review_queue: true
+  sqlite: true
