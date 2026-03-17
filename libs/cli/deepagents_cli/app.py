@@ -50,6 +50,7 @@ from deepagents_cli.textual_adapter import (
     TextualUIAdapter,
     _get_git_branch,
     execute_task_textual,
+    format_cost,
     format_token_count,
 )
 from deepagents_cli.widgets.approval import ApprovalMenu
@@ -1909,6 +1910,9 @@ class DeepAgentsApp(App):
                         f"\n\u251c System prompt + tools: ~{overhead_str}{overhead_unit} (fixed)"  # noqa: E501
                         f"\n\u2514 Conversation: ~{conv_str}{conv_unit}"
                     )
+
+                if self._session_stats.total_cost_usd is not None:
+                    msg += f"\nEstimated cost: {format_cost(self._session_stats.total_cost_usd)}"
 
                 await self._mount_message(AppMessage(msg))
             else:
