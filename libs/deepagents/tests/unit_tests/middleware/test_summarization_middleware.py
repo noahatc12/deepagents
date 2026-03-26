@@ -885,7 +885,12 @@ async def test_async_system_message_counts_for_truncate_trigger() -> None:
     assert not isinstance(result, ExtendedModelResponse)
     assert captured_request is not None
     truncated_call = captured_request.messages[0].tool_calls[0]
-    assert truncated_call["args"]["content"] == "x" * 20 + "...(argument truncated)"
+    # content key uses head+tail truncation for better context retention
+    truncated_content = truncated_call["args"]["content"]
+    assert truncated_content.startswith("x" * 10)
+    assert "...(argument truncated)" in truncated_content
+    assert "100 chars total" in truncated_content
+    assert truncated_content.endswith("x" * 5)
 
 
 class TestBackendFailureHandling:
@@ -1517,8 +1522,11 @@ def test_truncate_old_write_file_tool_call() -> None:
     assert isinstance(first_ai_msg, AIMessage)
     assert len(first_ai_msg.tool_calls) == 1
     assert first_ai_msg.tool_calls[0]["name"] == "write_file"
-    # Content should be first 20 chars + truncation text
-    assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+    # Content uses head+tail truncation for better context retention
+    truncated = first_ai_msg.tool_calls[0]["args"]["content"]
+    assert truncated.startswith("x" * 25)  # head portion preserved
+    assert "...(argument truncated)" in truncated
+    assert len(truncated) < len(large_content)
 
 
 def test_truncate_old_edit_file_tool_call() -> None:
@@ -1576,8 +1584,13 @@ def test_truncate_old_edit_file_tool_call() -> None:
 
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["name"] == "edit_file"
-    assert first_ai_msg.tool_calls[0]["args"]["old_string"] == "a" * 20 + "...(argument truncated)"
-    assert first_ai_msg.tool_calls[0]["args"]["new_string"] == "b" * 20 + "...(argument truncated)"
+    # old_string and new_string use head+tail truncation
+    truncated_old = first_ai_msg.tool_calls[0]["args"]["old_string"]
+    truncated_new = first_ai_msg.tool_calls[0]["args"]["new_string"]
+    assert truncated_old.startswith("a" * 12)
+    assert "...(argument truncated)" in truncated_old
+    assert truncated_new.startswith("b" * 12)
+    assert "...(argument truncated)" in truncated_new
 
 
 def test_truncate_ignores_other_tool_calls() -> None:
@@ -1740,7 +1753,10 @@ def test_truncate_with_token_keep_policy() -> None:
 
     # First message should be cleaned since it's outside the token window
     first_ai_msg = cleaned_messages[0]
-    assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+    truncated = first_ai_msg.tool_calls[0]["args"]["content"]
+    assert truncated.startswith("x" * 25)
+    assert "...(argument truncated)" in truncated
+    assert len(truncated) < len(large_content)
 
 
 def test_truncate_with_fraction_trigger_and_keep() -> None:
@@ -1797,7 +1813,10 @@ def test_truncate_with_fraction_trigger_and_keep() -> None:
     # Truncation modifies messages inline
     cleaned_messages = modified_request.messages
     first_ai_msg = cleaned_messages[0]
-    assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+    truncated = first_ai_msg.tool_calls[0]["args"]["content"]
+    assert truncated.startswith("x" * 25)
+    assert "...(argument truncated)" in truncated
+    assert len(truncated) < len(large_content)
 
 
 def test_truncate_before_summarization() -> None:
@@ -1908,7 +1927,9 @@ def test_truncate_without_summarization() -> None:
     # Truncation modifies messages inline
     cleaned_messages = modified_request.messages
     first_ai_msg = cleaned_messages[0]
-    assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+    truncated = first_ai_msg.tool_calls[0]["args"]["content"]
+    assert "...(argument truncated)" in truncated
+    assert len(truncated) < 200  # original was "x" * 200
 
 
 def test_truncate_preserves_small_arguments() -> None:
@@ -2032,7 +2053,9 @@ def test_truncate_mixed_tool_calls() -> None:
 
     # write_file should be cleaned
     assert first_ai_msg.tool_calls[1]["name"] == "write_file"
-    assert first_ai_msg.tool_calls[1]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+    truncated_wf = first_ai_msg.tool_calls[1]["args"]["content"]
+    assert "...(argument truncated)" in truncated_wf
+    assert len(truncated_wf) < 200  # original was "x" * 200
 
     # shell should be unchanged
     assert first_ai_msg.tool_calls[2]["name"] == "shell"
@@ -2089,7 +2112,10 @@ def test_truncate_custom_truncation_text() -> None:
     cleaned_messages = modified_request.messages
 
     first_ai_msg = cleaned_messages[0]
-    assert first_ai_msg.tool_calls[0]["args"]["content"] == "y" * 20 + "[TRUNCATED]"
+    truncated = first_ai_msg.tool_calls[0]["args"]["content"]
+    assert "[TRUNCATED]" in truncated
+    assert truncated.startswith("y" * 12)  # head_size=min(200, 50//4)=12
+    assert len(truncated) < 100  # original was "y" * 100
 
 
 @pytest.mark.anyio
@@ -2142,7 +2168,10 @@ async def test_truncate_async_works() -> None:
     cleaned_messages = modified_request.messages
 
     first_ai_msg = cleaned_messages[0]
-    assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+    truncated = first_ai_msg.tool_calls[0]["args"]["content"]
+    assert truncated.startswith("x" * 25)
+    assert "...(argument truncated)" in truncated
+    assert len(truncated) < 200  # original was "x" * 200
 
 
 # -----------------------------------------------------------------------------
