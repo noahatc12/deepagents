@@ -1,0 +1,50 @@
+# Template for adding a new market
+# Copy this file to configs/<market_name>.yaml and fill in your values.
+# Run with: python -m apartment_leads run --config configs/<market_name>.yaml
+
+geography:
+  # Provide at least one: city, county, zips, or metro
+  city: YOUR_CITY             # e.g. "Long Beach"
+  county: YOUR_COUNTY         # e.g. "Los Angeles"
+  state: CA                   # State abbreviation
+  # zips:
+  #   - "90001"
+  #   - "90002"
+  # metro: "Los Angeles"
+  # bounding_box: [min_lat, min_lon, max_lat, max_lon]
+
+sources:
+  # Leave 'enabled' commented to use all applicable collectors automatically,
+  # or specify a subset.
+  # enabled:
+  #   - csv_import
+  #   - overture_maps
+
+  configs:
+    # csv_import:
+    #   csv_path: data/my_properties.csv
+
+pipeline:
+  requests_per_second: 0.5    # Lower is more polite; increase with caution
+  cache_ttl_seconds: 86400    # 24h cache
+  unclear_threshold: 0.20
+  filter_third_party: true
+  min_units: null             # null = no filter; set to 5 for 5+ units
+  log_level: INFO
+
+enrichment:
+  enabled:
+    - ca_sos
+    - opencorporates
+  configs:
+    ca_sos: {}
+    opencorporates:
+      jurisdiction_code: us_ca  # Change for other states
+
+output:
+  dir: data/processed
+  csv: true
+  excel: true
+  json: true
+  review_queue: true
+  sqlite: true

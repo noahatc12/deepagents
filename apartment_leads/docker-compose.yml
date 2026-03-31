@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  pipeline:
+    build: .
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./configs:/app/configs
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - OPENCORPORATES_API_KEY=${OPENCORPORATES_API_KEY:-}
+      - SOCRATA_APP_TOKEN=${SOCRATA_APP_TOKEN:-}
+      - CA_SOS_CSV_PATH=${CA_SOS_CSV_PATH:-}
+    # Override CMD to run a specific config:
+    # docker-compose run pipeline run --config configs/east_bay.yaml
+    command: ["--help"]
