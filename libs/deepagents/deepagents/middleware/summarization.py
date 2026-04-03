@@ -90,11 +90,18 @@ logger = logging.getLogger(__name__)
 
 SUMMARIZATION_SYSTEM_PROMPT = """## Compact conversation Tool `compact_conversation`
 
-You have access to a `compact_conversation` tool. This tool refreshes your context window to reduce context bloat and costs.
+You have access to a `compact_conversation` tool. This tool summarizes older messages and refreshes your context window to reduce context bloat and costs. The full conversation history is preserved in a file for reference if needed.
 
 You should use the tool when:
 - The user asks to move on to a completely new task for which previous context is likely irrelevant.
 - You have finished extracting or synthesizing a result and previous working context is no longer needed.
+- You notice your context is getting large after many tool calls (e.g., extensive file reading, searching, or editing).
+- You are about to start a large, context-heavy operation and want to free up space first.
+
+You should NOT use the tool when:
+- You are in the middle of a multi-step task that depends on recent context.
+- The user is asking follow-up questions about work you just completed.
+- Recent tool results contain information you still need to reference.
 """
 
 
@@ -625,6 +632,11 @@ A condensed summary follows:
     def _truncate_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
         """Truncate large arguments in a single tool call.
 
+        Preserves the beginning and end of long values for better context
+        retention. For file-related arguments (content, new_string, old_string),
+        keeps the first and last portions so the agent can still understand
+        what was written/edited.
+
         Args:
             tool_call: The tool call dictionary to truncate.
 
@@ -636,9 +648,23 @@ A condensed summary follows:
         truncated_args = {}
         modified = False
 
+        # Keys that benefit from head+tail truncation for better context
+        _CONTENT_KEYS = {"content", "new_string", "old_string", "file_content", "code", "text", "body"}
+
         for key, value in args.items():
             if isinstance(value, str) and len(value) > self._max_arg_length:
-                truncated_args[key] = value[:20] + self._truncation_text
+                if key in _CONTENT_KEYS:
+                    # Keep head and tail for content-like args for better context
+                    head_size = min(200, self._max_arg_length // 4)
+                    tail_size = min(100, self._max_arg_length // 8)
+                    truncated_args[key] = (
+                        value[:head_size]
+                        + f"\n\n{self._truncation_text} ({len(value)} chars total)\n\n"
+                        + value[-tail_size:]
+                    )
+                else:
+                    # For non-content args, just keep a reasonable prefix
+                    truncated_args[key] = value[:100] + self._truncation_text
                 modified = True
             else:
                 truncated_args[key] = value
@@ -690,7 +716,7 @@ A condensed summary follows:
                 msg_modified = False
 
                 for tool_call in msg.tool_calls:
-                    if tool_call["name"] in {"write_file", "edit_file"}:
+                    if tool_call["name"] in {"write_file", "edit_file", "execute"}:
                         truncated_call = self._truncate_tool_call(tool_call)  # ty: ignore[invalid-argument-type]
                         if truncated_call != tool_call:
                             msg_modified = True

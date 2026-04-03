@@ -110,7 +110,14 @@ class CompiledSubAgent(TypedDict):
     """
 
 
-DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
+DEFAULT_SUBAGENT_PROMPT = """You are a focused subagent working on a specific delegated task. You have access to the same tools as the main agent.
+
+Key principles:
+- Stay focused on the specific task you were given. Do not expand scope.
+- Be thorough — read relevant files, verify your work, and iterate until the task is fully complete.
+- Return a clear, concise result that directly addresses the task prompt. Include specific details (file paths, line numbers, code snippets) so the main agent can act on your findings.
+- If you encounter ambiguity in the task description, make a reasonable judgment call and note your assumption in the result.
+- If the task cannot be completed (e.g., missing files, permissions), explain what blocked you and what you tried."""
 
 # State keys that are excluded when passing state to subagents and when returning
 # updates from subagents.
@@ -259,13 +266,33 @@ When NOT to use the task tool:
 - If delegating does not reduce token usage, complexity, or context switching
 - If splitting would add latency without benefit
 
+## Writing effective task prompts
+
+The quality of the subagent's output depends heavily on the quality of your prompt. Include:
+- **Context**: What the user is trying to accomplish and any relevant background
+- **Specific instructions**: Exactly what the subagent should do, step by step
+- **Constraints**: Any limitations, conventions, or requirements to follow
+- **Expected output format**: What the subagent should return (e.g., a summary, code, a list of findings)
+- **Scope boundaries**: What the subagent should NOT do or change
+
+Bad prompt: "Fix the bug in auth.py"
+Good prompt: "In auth.py, the login function raises a TypeError when the email field is None. Read the function, understand the expected flow, and add a validation check that returns a 400 error with a clear message instead of crashing. Follow the existing error handling patterns in the file. Return the exact changes you made and why."
+
+## Task decomposition strategy
+
+When facing a complex objective, decompose it effectively:
+1. **Identify independent units** — Which parts can run in isolation without shared state?
+2. **Minimize inter-task dependencies** — Each subagent should be self-contained. If task B needs the output of task A, run them sequentially, not in parallel.
+3. **Right-size the tasks** — Too granular wastes overhead; too broad defeats the purpose. Aim for tasks that take 5-50 tool calls.
+4. **Synthesize results** — After parallel tasks complete, combine their outputs thoughtfully. Don't just concatenate — integrate and reconcile.
+
 ## Important Task Tool Usage Notes to Remember
 - Whenever possible, parallelize the work that you do. This is true for both tool_calls, and for tasks. Whenever you have independent steps to complete - make tool_calls, or kick off tasks (subagents) in parallel to accomplish them faster. This saves time for the user, which is incredibly important.
 - Remember to use the `task` tool to silo independent tasks within a multi-part objective.
 - You should use the `task` tool whenever you have a complex task that will take multiple steps, and is independent from other tasks that the agent needs to complete. These agents are highly competent and efficient."""  # noqa: E501
 
 
-DEFAULT_GENERAL_PURPOSE_DESCRIPTION = "General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. This agent has access to all tools as the main agent."  # noqa: E501
+DEFAULT_GENERAL_PURPOSE_DESCRIPTION = "General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. Use this agent to: (1) isolate context-heavy work like deep codebase exploration or research, (2) parallelize independent subtasks, (3) delegate focused work that would bloat the main thread. The agent has access to all tools and will return a synthesized result. Provide detailed instructions including what to search for, what to return, and any constraints."  # noqa: E501
 
 # Base spec for general-purpose subagent (caller adds model, tools, middleware)
 GENERAL_PURPOSE_SUBAGENT: SubAgent = {
